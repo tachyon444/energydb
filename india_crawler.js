@@ -24,14 +24,14 @@
  *   INDIA_CATEGORIES              optional comma-separated labels overriding defaults
  *   INDIA_TZ                      default Asia/Seoul for reporting window alignment with GAS
  *
- * npm i playwright playwright-extra playwright-extra-plugin-stealth
+ * npm i playwright playwright-extra puppeteer-extra-plugin-stealth
  */
 
 const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { chromium } = require('playwright-extra');
-const StealthPlugin = require('playwright-extra-plugin-stealth');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
 chromium.use(StealthPlugin());
 
