@@ -18,6 +18,11 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Node / npm 버전 확인
+        run: |
+          node -v
+          npm -v
+
       - name: 의존성 및 Playwright Chromium 설치
         run: |
           npm install
@@ -30,3 +35,11 @@ jobs:
           INDIA_HEADLESS: 'true'
           INDIA_TZ: 'Asia/Seoul'
         run: node india_crawler.js
+
+      - name: 디버그 아티팩트 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: india-debug
+          path: artifacts/india_debug
+          if-no-files-found: ignore
