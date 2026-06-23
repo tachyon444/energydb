@@ -18,13 +18,15 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 필수 패키지 및 Playwright 브라우저 설치
+      - name: 의존성 및 Playwright Chromium 설치
         run: |
           npm install
           npx playwright install chromium --with-deps
 
-      - name: 크롤러 실행 및 GAS로 전송
+      - name: India crawler 실행 및 GAS로 전송
         env:
           GAS_WEBAPP_URL: ${{ secrets.GAS_WEBAPP_URL }}
           INDIA_INGEST_TOKEN: ${{ secrets.INDIA_INGEST_TOKEN }}
+          INDIA_HEADLESS: 'true'
+          INDIA_TZ: 'Asia/Seoul'
         run: node india_crawler.js
