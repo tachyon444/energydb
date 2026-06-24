@@ -31,6 +31,7 @@
  *   INDIA_DEBUG_DIR               default ./artifacts/india_debug
  *   INDIA_TZ                      default Asia/Seoul
  *   INDIA_CATEGORIES              optional comma-separated labels overriding defaults
+ *   INDIA_STAR_RATING_SPLIT        default true for RAC Variable; true forces 1~5 star split
  *
  * Fix note: DEFAULT_CATEGORIES/HVAC_CATEGORY_MAP are initialized before CONFIG so INDIA_CATEGORIES works.
  */
@@ -70,6 +71,7 @@ const CONFIG = {
   debugDir: process.env.INDIA_DEBUG_DIR || path.resolve(process.cwd(), 'artifacts/india_debug'),
   reportTz: process.env.INDIA_TZ || 'Asia/Seoul',
   categories: parseCategoryEnv(process.env.INDIA_CATEGORIES),
+  starRatingSplit: parseBoolean(process.env.INDIA_STAR_RATING_SPLIT, false),
 };
 
 const TYPE_HINTS = [
@@ -414,11 +416,11 @@ async function waitForFilterPanel(page) {
   await jitter(1200, 1800);
 }
 
-async function selectAllVisibleFilters(page) {
+async function selectAllVisibleFilters(page, filterOverrides = {}) {
   const allPasses = [];
 
   for (let pass = 1; pass <= 2; pass++) {
-    const result = await page.evaluate((passNo) => {
+    const result = await page.evaluate(({ passNo, filterOverrides }) => {
       function norm(v) {
         return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
       }
@@ -456,7 +458,29 @@ async function selectAllVisibleFilters(page) {
         let mode = 'select-all-sentinel';
         let selectedLabels = [];
 
-        if (selectAllOpt) {
+        const starRatingTarget = filterOverrides && filterOverrides.starRating ? String(filterOverrides.starRating).trim() : '';
+        const starOptions = options.filter((opt) => {
+          const t = norm(opt.textContent || opt.label || opt.value || '');
+          return /^[1-5](\s*star|\s*$)/i.test(t);
+        });
+        const looksLikeStarRatingSelect = !!starRatingTarget && options.length <= 10 && starOptions.length >= 3;
+
+        if (looksLikeStarRatingSelect) {
+          const targetOpt = options.find((opt) => {
+            const t = norm(opt.textContent || opt.label || opt.value || '');
+            const v = norm(opt.value || '');
+            return new RegExp('^' + starRatingTarget + '(\\s*star|\\s*$)', 'i').test(t) || v === starRatingTarget;
+          });
+
+          if (targetOpt) {
+            mode = 'star-rating-single';
+            targetOpt.selected = true;
+            selectedLabels = [norm(targetOpt.textContent || targetOpt.label || targetOpt.value || starRatingTarget)];
+          } else if (selectAllOpt) {
+            selectAllOpt.selected = true;
+            selectedLabels = [norm(selectAllOpt.textContent || selectAllOpt.label || selectAllOpt.value || 'Select All')];
+          }
+        } else if (selectAllOpt) {
           // BEE 화면은 'Select All' 옵션을 별도 값으로 받는 구조에 가깝습니다.
           // 모든 개별 옵션 수천 개를 선택하면 결과가 로딩되지 않거나 Export 버튼이 안 뜰 수 있으므로,
           // 반드시 sentinel인 'Select All' 자체만 선택합니다.
@@ -489,7 +513,7 @@ async function selectAllVisibleFilters(page) {
       });
 
       return summary;
-    }, pass);
+    }, { passNo: pass, filterOverrides });
 
     allPasses.push(...result);
     await page.waitForTimeout(pass === 1 ? 1800 : 900);
@@ -498,7 +522,8 @@ async function selectAllVisibleFilters(page) {
   // 마지막 pass만 submit 위치 계산에 사용합니다.
   const latestPass = allPasses.filter((x) => x.pass === 2);
   const finalSummary = latestPass.length ? latestPass : allPasses;
-  console.log(`[INDIA] selected all filters: ${JSON.stringify(finalSummary)}`);
+  const suffix = filterOverrides.starRating ? ` starRating=${filterOverrides.starRating}` : '';
+  console.log(`[INDIA] selected all filters${suffix}: ${JSON.stringify(finalSummary)}`);
   await jitter(700, 1200);
   return finalSummary;
 }
@@ -762,14 +787,56 @@ async function downloadCategoryPdf(page, category) {
   }
 }
 
+function shouldSplitByStarRating(category) {
+  if (CONFIG.starRatingSplit) return true;
+  return category && category.key === 'IN_RAC_VARIABLE';
+}
+
 async function scrapeCategoryViaPdf(page, category, reportWindow, runId) {
+  if (!shouldSplitByStarRating(category)) {
+    return scrapeCategoryPdfOnce(page, category, reportWindow, runId, {});
+  }
+
+  const ratings = ['1', '2', '3', '4', '5'];
+  const combined = {
+    status: 'ok',
+    message: 'star-rating-split',
+    pdfPath: '',
+    scrapedRows: 0,
+    keptRows7d: 0,
+    records: [],
+  };
+
+  for (const rating of ratings) {
+    console.log(`[INDIA] star rating split: ${category.label} / ${rating}`);
+    try {
+      const part = await scrapeCategoryPdfOnce(page, category, reportWindow, runId, { starRating: rating });
+      combined.scrapedRows += part.scrapedRows || 0;
+      combined.keptRows7d += part.keptRows7d || 0;
+      combined.records.push(...(part.records || []));
+      combined.pdfPath = part.pdfPath || combined.pdfPath;
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      console.error(`[INDIA] star rating split failed: ${category.label} / ${rating} / ${msg}`);
+      await saveDebugArtifacts(page, `${slugify(category.label)}_star_${rating}_fatal`).catch(() => {});
+      combined.status = 'partial';
+      combined.message = combined.message ? `${combined.message}; star ${rating}: ${msg}` : `star ${rating}: ${msg}`;
+    }
+  }
+
+  const records = dedupeBy(combined.records, (row) => row.rowKey);
+  return { ...combined, records };
+}
+
+async function scrapeCategoryPdfOnce(page, category, reportWindow, runId, filterOverrides) {
   await gotoSearchCompare(page);
   await selectEquipmentCategory(page, category.label);
   await waitForFilterPanel(page);
-  const selectedInfos = await selectAllVisibleFilters(page);
+  const selectedInfos = await selectAllVisibleFilters(page, filterOverrides);
   await clickIndiaFilterSubmit(page, selectedInfos);
   await waitForResultsReady(page);
-  await saveDebugArtifacts(page, `${slugify(category.label)}_results`);
+  const starSuffix = filterOverrides && filterOverrides.starRating ? `_star_${filterOverrides.starRating}` : '';
+  await saveDebugArtifacts(page, `${slugify(category.label)}${starSuffix}_results`);
 
   const pdfPath = await downloadCategoryPdf(page, category);
   console.log(`[INDIA] downloaded PDF: ${pdfPath}`);
@@ -789,7 +856,7 @@ async function scrapeCategoryViaPdf(page, category, reportWindow, runId) {
     const manufacturer = normalizeText(row.manufacturer || row.brand || '');
     const modelName = normalizeText(row.modelName || '');
     const productType = normalizeText(row.productType || '');
-    const starRating = normalizeText(row.starRating || '');
+    const starRating = normalizeText(row.starRating || filterOverrides.starRating || '');
     if (!manufacturer && !modelName) continue;
 
     const within7d = isWithinWindow(approvalDate, reportWindow.start7, reportWindow.today);
@@ -827,7 +894,7 @@ async function scrapeCategoryViaPdf(page, category, reportWindow, runId) {
 
   return {
     status: 'ok',
-    message: '',
+    message: filterOverrides.starRating ? `star-rating=${filterOverrides.starRating}` : '',
     pdfPath,
     scrapedRows: parsed.rows.length,
     keptRows7d,
