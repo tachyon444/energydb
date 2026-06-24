@@ -244,7 +244,10 @@ function formatYmd(date) {
 }
 
 function normalizeText(value) {
-  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  return String(value == null ? '' : value)
+    .replace(/\u0002/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function slugify(value) {
@@ -854,128 +857,186 @@ function parseBeePdfText(text, category) {
     const row = parsePdfRowBlock(block, category);
     if (row) rows.push(row);
   }
+
+  // BEE PDF may contain family-model duplicate text. Keep unique model + approval rows.
   return dedupeBy(rows, (row) => [row.manufacturer, row.modelName, row.approvalDate].join('|').toLowerCase());
 }
 
 function splitPdfLinesIntoRowBlocks(lines) {
   const blocks = [];
   let current = [];
+  let expectedSerial = 1;
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = normalizeText(rawLine);
     if (isPdfNoiseLine(line)) continue;
-    if (isPdfRowStartLine(line)) {
-      if (current.length) {
-        blocks.push(current);
-        current = [];
-      }
-      current.push(line);
-    } else if (current.length) {
-      current.push(line);
+
+    const rowStart = getExpectedPdfRowStart(line, expectedSerial);
+    if (rowStart) {
+      if (current.length) blocks.push(current);
+      current = [line];
+      expectedSerial++;
+      continue;
     }
+
+    if (current.length) current.push(line);
   }
+
   if (current.length) blocks.push(current);
   return blocks;
+}
+
+function getExpectedPdfRowStart(line, expectedSerial) {
+  const text = normalizeText(line);
+  if (!text) return null;
+
+  const expected = String(expectedSerial);
+  if (text === expected) {
+    return { serial: expected, brandRemainder: '' };
+  }
+
+  if (!text.startsWith(expected) || text.length <= expected.length) return null;
+
+  const rest = normalizeText(text.slice(expected.length));
+  if (!rest) return null;
+  if (/^[./:-]/.test(rest)) return null;
+  if (!/[A-Za-z]/.test(rest)) return null;
+  if (extractDateTokens(rest).length) return null;
+
+  return { serial: expected, brandRemainder: rest };
 }
 
 function isPdfNoiseLine(line) {
   const lower = normalizeText(line).toLowerCase();
   if (!lower) return true;
+
+  // Title/address/footer/page counter. The footer is rendered like "1 - 1236/24/2026 11:07:42 AM".
   if (lower.includes('bureau of energy efficiency')) return true;
   if (lower.includes('ministry of power')) return true;
   if (lower.includes('star rating list for')) return true;
-  if (lower.includes('approval date') || lower === 'approval') return true;
-  if (lower === 'date') return true;
+  if (lower.includes('sewa bhawan')) return true;
+  if (lower.includes('new delhi')) return true;
+  if (/^\d+\s*-\s*\d+/.test(lower)) return true;
+  if (/^page\s+\d+/i.test(lower)) return true;
+
+  // Header fragments from pdf-parse. Do not filter plain "STAR" because it can be a brand line in "BLUE STAR".
+  const exactNoise = new Set([
+    's.nobrandtype',
+    's.no brand type',
+    'model',
+    'no',
+    'model no',
+    'eer(w/',
+    'eer(w/w)',
+    'w) &',
+    'equivale',
+    'nt',
+    'iseer',
+    '(units/y',
+    'ear)',
+    'nominal',
+    'marketin',
+    'g',
+    'capacity',
+    '(ton)',
+    'cooling',
+    'capacity (w)',
+    '(w)',
+    'power',
+    'consum',
+    'ption',
+    'seasona',
+    'l energy',
+    'csec',
+    '(kwh)',
+    'approval',
+    'date',
+    'valid till',
+    'star rating',
+  ]);
+  if (exactNoise.has(lower)) return true;
+
+  if (lower.includes('approval date')) return true;
   if (lower.includes('valid till')) return true;
-  if (lower.includes('s.no')) return true;
-  if (lower === 'brand' || lower === 'type' || lower === 'model no') return true;
   if (lower.includes('nominal marketing capacity')) return true;
   if (lower.includes('cooling seasonal energy consumption')) return true;
   if (lower.includes('power consumption')) return true;
   if (lower.includes('cooling capacity')) return true;
-  if (lower.includes('eer(w)')) return true;
-  if (lower.includes('eer (w)')) return true;
   if (lower.includes('equivalent iseer')) return true;
-  if (lower === 'star rating') return true;
-  if (/^page\s+\d+/i.test(lower)) return true;
-  return false;
-}
 
-function isPdfRowStartLine(line) {
-  return /^\d+\b(?:\s+[A-Z][A-Z0-9&()./' -]+)?$/.test(line);
+  return false;
 }
 
 function parsePdfRowBlock(block, category) {
   if (!block || !block.length) return null;
-  let lines = block.slice();
-  let serial = '';
-  let brand = '';
 
-  const first = lines[0];
-  let m = first.match(/^(\d+)\s+(.+)$/);
-  if (m) {
-    serial = m[1];
-    brand = normalizeText(m[2]);
-    lines = [brand].concat(lines.slice(1));
+  const originalBlock = block.map((line) => normalizeText(line)).filter(Boolean);
+  let lines = originalBlock.slice();
+  const first = lines.shift();
+  let serial = '';
+  const brandLines = [];
+
+  const compactStart = first.match(/^(\d+)(.+)$/);
+  if (compactStart && /[A-Za-z]/.test(compactStart[2]) && !/^[./:-]/.test(normalizeText(compactStart[2]))) {
+    serial = compactStart[1];
+    brandLines.push(normalizeText(compactStart[2]));
   } else if (/^\d+$/.test(first)) {
     serial = first;
-    lines = lines.slice(1);
-    brand = normalizeText(lines[0] || '');
+  } else {
+    return null;
   }
 
-  const dateEntries = [];
-  lines.forEach((line, idx) => {
-    const matches = line.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b/g);
-    if (matches) {
-      matches.forEach((match) => dateEntries.push({ idx, value: match }));
-    }
-  });
+  while (lines.length && looksLikeBrandContinuationLine(lines[0])) {
+    brandLines.push(normalizeText(lines.shift()));
+  }
+
+  if (!brandLines.length && lines.length) {
+    brandLines.push(normalizeText(lines.shift()));
+  }
+
+  const dateEntries = extractDateTokens(originalBlock.join(' '));
   if (dateEntries.length < 2) return null;
 
-  const approvalDate = dateEntries[0].value;
-  const validTill = dateEntries[1].value;
-  const firstDateIdx = dateEntries[0].idx;
+  const approvalDate = dateEntries[0];
+  const validTill = dateEntries[1];
+  const manufacturer = normalizeText(brandLines.join(' '));
 
-  const preDateLines = lines.slice(0, firstDateIdx).filter(Boolean);
-  const textOnly = preDateLines.filter((line) => !looksNumericLine(line));
-  if (!textOnly.length) return null;
+  const preDateLines = [];
+  for (const line of lines) {
+    if (extractDateTokens(line).length) break;
+    preDateLines.push(line);
+  }
 
-  if (!brand) brand = normalizeText(textOnly[0] || '');
-  const rest = textOnly.slice(brand ? 1 : 0).map(cleanModelLine).filter(Boolean);
-
-  let typeLines = [];
-  let modelLines = [];
-  let modelStarted = false;
-  for (const line of rest) {
-    if (!modelStarted && looksLikeTypeLine(line)) {
-      typeLines.push(line);
+  const nonFamilyLines = [];
+  let inFamilySection = false;
+  for (const line of preDateLines) {
+    if (/^family of/i.test(line)) {
+      inFamilySection = true;
       continue;
     }
-    modelStarted = true;
-    if (/^family of model/i.test(line)) continue;
-    modelLines.push(line);
+    if (inFamilySection) continue;
+    if (/^model'?s?\s*:?$/i.test(line)) continue;
+    nonFamilyLines.push(cleanModelLine(line));
   }
 
-  if (!typeLines.length) {
-    const inferred = inferTypeFromCategory(category.label);
-    if (inferred) typeLines = [inferred];
-  }
-  if (!modelLines.length && rest.length) {
-    modelLines = rest.slice(typeLines.length);
-  }
-  if (!modelLines.length && rest.length) {
-    modelLines = [rest[rest.length - 1]];
+  const typeLines = [];
+  const modelLines = nonFamilyLines.filter(Boolean);
+  while (modelLines.length && looksLikeTypeLine(modelLines[0])) {
+    typeLines.push(modelLines.shift());
   }
 
-  const starRating = parseStarRatingFromBlock(lines);
+  let productType = normalizeText(typeLines.join(' '));
+  if (!productType) productType = inferTypeFromCategory(category.label);
+
   const modelName = normalizeText(modelLines.join(' '));
-  const productType = normalizeText(typeLines.join(' '));
+  const starRating = parseStarRatingFromBlock(originalBlock);
 
-  if (!brand && !modelName) return null;
+  if (!manufacturer && !modelName) return null;
 
   return {
     serial,
-    manufacturer: normalizeText(brand),
-    brand: normalizeText(brand),
+    manufacturer,
+    brand: manufacturer,
     modelName,
     productType,
     approvalDate,
@@ -984,11 +1045,85 @@ function parsePdfRowBlock(block, category) {
   };
 }
 
+function extractDateTokens(text) {
+  const source = String(text || '').replace(/\u0002/g, '-');
+  const tokens = [];
+  let lastEnd = -1;
+
+  for (let i = 0; i < source.length; i++) {
+    const m = source.slice(i).match(/^(\d{1,2}[/-]\d{1,2}[/-]\d{4})/);
+    if (!m) continue;
+
+    const token = m[1];
+    const start = i;
+    const end = i + token.length;
+
+    if (start < lastEnd) continue;
+    if (!isValidMdyDateToken(token)) continue;
+
+    tokens.push(token);
+    lastEnd = end;
+    i = end - 1;
+  }
+
+  return tokens;
+}
+
+function isValidMdyDateToken(token) {
+  const m = String(token || '').match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (!m) return false;
+
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  const year = Number(m[3]);
+  if (!Number.isInteger(month) || !Number.isInteger(day) || !Number.isInteger(year)) return false;
+  if (year < 2000 || year > 2100) return false;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day;
+}
+
+function looksLikeBrandContinuationLine(line) {
+  const text = normalizeText(line);
+  if (!text) return false;
+  if (extractDateTokens(text).length) return false;
+  if (looksLikeTypeStartLine(text)) return false;
+  if (!/[A-Za-z]/.test(text)) return false;
+  if (/\d/.test(text)) return false;
+  if (text.length > 35) return false;
+
+  // Multi-line brands in the BEE PDF are typically all-caps, e.g. BLUE / STAR, MITSUBIS / HI / ELECTRIC.
+  return !/[a-z]/.test(text);
+}
+
+function looksLikeTypeStartLine(line) {
+  const lower = normalizeText(line).toLowerCase();
+  if (!lower) return false;
+  return [
+    'split',
+    'window',
+    'cassette',
+    'tower',
+    'floor',
+    'ceiling',
+    'duct',
+    'ductable',
+    'packaged',
+    'portable',
+    'room',
+    'air conditioner',
+    'chiller',
+    'evaporative',
+    'cooler',
+  ].some((hint) => lower.startsWith(hint) || lower.includes(hint));
+}
+
 function looksNumericLine(line) {
   const text = normalizeText(line);
   if (!text) return false;
+  if (extractDateTokens(text).length) return true;
   if (/^\d+(?:\.\d+)?$/.test(text)) return true;
-  if (/^\d+[./-]\d+[./-]\d+$/.test(text)) return false;
   return false;
 }
 
@@ -1002,7 +1137,18 @@ function cleanModelLine(line) {
 function looksLikeTypeLine(line) {
   const lower = normalizeText(line).toLowerCase();
   if (!lower) return false;
-  return TYPE_HINTS.some((hint) => lower.includes(hint));
+  if (lower === 'r') return true;
+  return TYPE_HINTS.some((hint) => lower.includes(hint)) || [
+    'unitary',
+    'nitary',
+    'conditioner',
+    'conditione',
+    'air',
+    'water cooled',
+    'air cooled',
+    'scroll',
+    'screw',
+  ].some((hint) => lower.includes(hint));
 }
 
 function inferTypeFromCategory(label) {
