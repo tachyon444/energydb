@@ -408,53 +408,92 @@ async function waitForFilterPanel(page) {
 }
 
 async function selectAllVisibleFilters(page) {
-  const result = await page.evaluate(() => {
-    function norm(v) {
-      return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
-    }
-    function isVisible(el) {
-      if (!el) return false;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    }
+  const allPasses = [];
 
-    const summary = [];
-    const selects = Array.from(document.querySelectorAll('select')).filter((select) => {
-      if (!isVisible(select)) return false;
-      const rect = select.getBoundingClientRect();
-      const isLeftPanel = rect.left < 520 && rect.top > 180;
-      const notCategoryBox = rect.top > 250;
-      const enoughOptions = (select.options || []).length >= 2;
-      return isLeftPanel && notCategoryBox && enoughOptions;
-    });
+  for (let pass = 1; pass <= 2; pass++) {
+    const result = await page.evaluate((passNo) => {
+      function norm(v) {
+        return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+      }
+      function isVisible(el) {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      }
+      function fireChange(select) {
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        select.dispatchEvent(new Event('blur', { bubbles: true }));
+      }
 
-    selects.forEach((select, idx) => {
-      const rect = select.getBoundingClientRect();
-      const options = Array.from(select.options || []);
-      let selectedCount = 0;
-
-      options.forEach((opt) => {
-        const text = norm(opt.textContent || opt.label || '');
-        if (!text) return;
-        if (/^select appliances\/equipment$/i.test(text)) return;
-        if (/^select all$/i.test(text)) return;
-        if (/^all$/i.test(text)) return;
-        opt.selected = true;
-        selectedCount++;
+      const summary = [];
+      const selects = Array.from(document.querySelectorAll('select')).filter((select) => {
+        if (!isVisible(select)) return false;
+        const rect = select.getBoundingClientRect();
+        const isLeftPanel = rect.left < 520 && rect.top > 180;
+        const notCategoryBox = rect.top > 250;
+        const enoughOptions = (select.options || []).length >= 2;
+        return isLeftPanel && notCategoryBox && enoughOptions;
       });
 
-      select.dispatchEvent(new Event('input', { bubbles: true }));
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      summary.push({ idx, selectedCount, optionsCount: options.length, top: Math.round(rect.top), left: Math.round(rect.left) });
-    });
+      selects.forEach((select, idx) => {
+        const rect = select.getBoundingClientRect();
+        const options = Array.from(select.options || []);
 
-    return summary;
-  });
+        const selectAllOpt = options.find((opt) => /^select all$/i.test(norm(opt.textContent || opt.label || opt.value || ''))) ||
+                             options.find((opt) => /^all$/i.test(norm(opt.textContent || opt.label || opt.value || '')));
 
-  console.log(`[INDIA] selected all filters: ${JSON.stringify(result)}`);
+        options.forEach((opt) => { opt.selected = false; });
+
+        let mode = 'select-all-sentinel';
+        let selectedLabels = [];
+
+        if (selectAllOpt) {
+          // BEE 화면은 'Select All' 옵션을 별도 값으로 받는 구조에 가깝습니다.
+          // 모든 개별 옵션 수천 개를 선택하면 결과가 로딩되지 않거나 Export 버튼이 안 뜰 수 있으므로,
+          // 반드시 sentinel인 'Select All' 자체만 선택합니다.
+          selectAllOpt.selected = true;
+          selectedLabels = [norm(selectAllOpt.textContent || selectAllOpt.label || selectAllOpt.value || 'Select All')];
+        } else {
+          // 일부 카테고리에서 Select All 옵션이 없을 때만 fallback으로 모든 실제 옵션 선택.
+          mode = 'fallback-all-options';
+          options.forEach((opt) => {
+            const text = norm(opt.textContent || opt.label || '');
+            if (!text) return;
+            if (/^select appliances\/equipment$/i.test(text)) return;
+            opt.selected = true;
+          });
+          selectedLabels = options.filter((opt) => opt.selected).slice(0, 5).map((opt) => norm(opt.textContent || opt.label || opt.value || ''));
+        }
+
+        fireChange(select);
+
+        summary.push({
+          pass: passNo,
+          idx,
+          mode,
+          selectedCount: options.filter((opt) => opt.selected).length,
+          optionsCount: options.length,
+          selectedLabels,
+          top: Math.round(rect.top),
+          left: Math.round(rect.left),
+        });
+      });
+
+      return summary;
+    }, pass);
+
+    allPasses.push(...result);
+    await page.waitForTimeout(pass === 1 ? 1800 : 900);
+  }
+
+  // 마지막 pass만 submit 위치 계산에 사용합니다.
+  const latestPass = allPasses.filter((x) => x.pass === 2);
+  const finalSummary = latestPass.length ? latestPass : allPasses;
+  console.log(`[INDIA] selected all filters: ${JSON.stringify(finalSummary)}`);
   await jitter(700, 1200);
-  return result;
+  return finalSummary;
 }
 
 async function clickIndiaFilterSubmit(page, selectedInfos) {
