@@ -8,7 +8,7 @@ on:
 jobs:
   scrape_india:
     runs-on: [self-hosted, windows, x64, bee-india]
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       - name: 코드 체크아웃
