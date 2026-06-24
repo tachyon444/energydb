@@ -7,7 +7,7 @@ on:
 
 jobs:
   scrape_india:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, windows, x64, bee-india]
 
     steps:
       - name: 코드 체크아웃
@@ -26,7 +26,7 @@ jobs:
       - name: 의존성 및 Playwright Chromium 설치
         run: |
           npm install
-          npx playwright install chromium --with-deps
+          npx playwright install chromium
           
       - name: BEE 사이트 연결 테스트
         run: |
