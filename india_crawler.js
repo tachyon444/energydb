@@ -8,11 +8,12 @@
  * 1) Open SearchCompare
  * 2) Choose HVAC category
  * 3) Force all visible filter boxes to Select All
- * 4) Click Submit
- * 5) Click Export to PDF
- * 6) Parse PDF text and extract Approval Date as registrationDate
- * 7) Keep only rows within last 7 days / last 2 months window
- * 8) POST to GAS doPost endpoint
+ * 4) Click left-panel green Submit button
+ * 5) Wait for result cards / Export to PDF button
+ * 6) Click Export to PDF and download PDF
+ * 7) Parse PDF text and extract Approval Date as registrationDate
+ * 8) Keep only rows within last 7 days / last 2 months window
+ * 9) POST to GAS doPost endpoint
  *
  * Recommended runtime:
  * - self-hosted Windows runner or local PC
@@ -104,7 +105,7 @@ async function main() {
 
   const context = await browser.newContext({
     acceptDownloads: true,
-    viewport: { width: 1440, height: 1000 },
+    viewport: { width: 1440, height: 1200 },
     locale: 'en-IN',
     timezoneId: 'Asia/Kolkata',
     userAgent:
@@ -383,6 +384,7 @@ async function waitForFilterPanel(page) {
       const style = window.getComputedStyle(el);
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     }
+
     const selects = Array.from(document.querySelectorAll('select')).filter((el) => {
       if (!isVisible(el)) return false;
       const rect = el.getBoundingClientRect();
@@ -390,6 +392,7 @@ async function waitForFilterPanel(page) {
       const enoughOptions = (el.options || []).length >= 2;
       return isLeftPanel && enoughOptions;
     });
+
     const labels = Array.from(document.querySelectorAll('label,h4,h5,div,span')).some((el) => {
       if (!isVisible(el)) return false;
       const rect = el.getBoundingClientRect();
@@ -397,8 +400,10 @@ async function waitForFilterPanel(page) {
       const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
       return /^(Brand|Type|Model|FModel|Star Rating|Indian Seasonal Energy Efficiency Ratio|Nominal Marketing Capacity)/i.test(text);
     });
+
     return selects.length >= 2 || labels;
   }, { timeout: CONFIG.timeoutMs });
+
   await jitter(1200, 1800);
 }
 
@@ -443,74 +448,222 @@ async function selectAllVisibleFilters(page) {
       select.dispatchEvent(new Event('change', { bubbles: true }));
       summary.push({ idx, selectedCount, optionsCount: options.length, top: Math.round(rect.top), left: Math.round(rect.left) });
     });
+
     return summary;
   });
 
   console.log(`[INDIA] selected all filters: ${JSON.stringify(result)}`);
   await jitter(700, 1200);
+  return result;
 }
 
-async function clickSubmit(page) {
-  const clicked = await page.evaluate(() => {
+async function clickIndiaFilterSubmit(page, selectedInfos) {
+  await page.waitForTimeout(800);
+
+  const lastTop = Array.isArray(selectedInfos) && selectedInfos.length
+    ? Math.max.apply(null, selectedInfos.map((x) => Number(x.top || 0)))
+    : 0;
+
+  const leftMin = Array.isArray(selectedInfos) && selectedInfos.length
+    ? Math.min.apply(null, selectedInfos.map((x) => Number(x.left || 9999)))
+    : 0;
+
+  const result = await page.evaluate(({ lastTop, leftMin }) => {
     function isVisible(el) {
-      if (!el) return false;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      if (!el || !el.getBoundingClientRect) return false;
+      const st = window.getComputedStyle(el);
+      if (!st) return false;
+      if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width >= 20 && r.height >= 20;
     }
-    const candidates = Array.from(document.querySelectorAll('input[type="submit"],button'))
-      .filter((el) => isVisible(el))
-      .filter((el) => {
-        const text = String(el.value || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        return text === 'submit';
-      })
-      .filter((el) => el.id !== 'btnSubscribeNews')
-      .filter((el) => {
-        const rect = el.getBoundingClientRect();
-        return rect.left < 520 && rect.top > 350;
-      })
-      .sort((a, b) => {
-        const ra = a.getBoundingClientRect();
-        const rb = b.getBoundingClientRect();
-        return ra.top - rb.top || ra.left - rb.left;
+
+    function labelOf(el) {
+      return [
+        el.value,
+        el.innerText,
+        el.textContent,
+        el.getAttribute('aria-label'),
+        el.getAttribute('title'),
+        el.getAttribute('name'),
+        el.id,
+        el.className,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    const els = Array.from(document.querySelectorAll('input, button, a'));
+    const candidates = [];
+
+    for (const el of els) {
+      if (!isVisible(el)) continue;
+
+      const label = labelOf(el);
+      const labelLc = label.toLowerCase();
+      const r = el.getBoundingClientRect();
+
+      if (el.id === 'btnSubscribeNews') continue;
+      if (labelLc.includes('latest news')) continue;
+      if (labelLc.includes('subscribe')) continue;
+      if (labelLc.includes('notification')) continue;
+
+      const looksSubmit =
+        labelLc.includes('submit') ||
+        labelLc.includes('btn-green') ||
+        labelLc.includes('btn-success');
+
+      if (!looksSubmit) continue;
+      if (r.left > 500) continue;
+      if (r.top < 250) continue;
+
+      const score =
+        Math.abs(r.top - (lastTop + 70)) +
+        Math.abs(r.left - leftMin) * 0.25 +
+        (r.top < lastTop - 40 ? 1000 : 0);
+
+      candidates.push({
+        el,
+        score,
+        info: {
+          id: el.id || '',
+          label,
+          top: Math.round(r.top),
+          left: Math.round(r.left),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
+        },
       });
+    }
 
-    const btn = candidates[0] || null;
-    if (!btn) return false;
-    btn.scrollIntoView({ block: 'center' });
-    btn.click();
-    return true;
-  });
+    if (!candidates.length) {
+      return { ok: false, reason: 'no-candidate' };
+    }
 
-  if (!clicked) throw new Error('Filter submit button not found');
-  await jitter(1500, 2500);
+    candidates.sort((a, b) => a.score - b.score);
+    const picked = candidates[0];
+
+    try {
+      picked.el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    } catch (e) {}
+
+    picked.el.click();
+
+    return {
+      ok: true,
+      picked: picked.info,
+      top5: candidates.slice(0, 5).map((x) => x.info),
+    };
+  }, { lastTop, leftMin });
+
+  if (!result || !result.ok) {
+    throw new Error('Filter submit button not found');
+  }
+
+  console.log(`[INDIA] filter submit picked: ${JSON.stringify(result.picked)}`);
+  await page.waitForTimeout(2000);
 }
 
 async function waitForResultsReady(page) {
   await Promise.race([
-    page.getByRole('button', { name: /Export to PDF/i }).waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
     page.locator('text=/Export to PDF/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-    page.locator('text=/Valid Till Date/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
+    page.locator('text=/Valid Till/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
+    page.locator('text=/Approval Date/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
+    page.locator('text=/Reviews\/Feedback/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
   ]);
   await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
   await jitter(1200, 1800);
 }
 
-async function clickExportPdf(page) {
-  const button = page.getByRole('button', { name: /Export to PDF/i }).first();
-  if (await button.isVisible().catch(() => false)) return button;
+async function clickIndiaExportToPdf(page) {
+  const deadline = Date.now() + 30000;
 
-  const alt = page.locator('text=/Export to PDF/i').first();
-  if (await alt.isVisible().catch(() => false)) return alt;
+  while (Date.now() < deadline) {
+    const result = await page.evaluate(() => {
+      function isVisible(el) {
+        if (!el || !el.getBoundingClientRect) return false;
+        const st = window.getComputedStyle(el);
+        if (!st) return false;
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width >= 20 && r.height >= 20;
+      }
+
+      function labelOf(el) {
+        return [
+          el.value,
+          el.innerText,
+          el.textContent,
+          el.getAttribute('aria-label'),
+          el.getAttribute('title'),
+          el.getAttribute('name'),
+          el.id,
+          el.className,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      const els = Array.from(document.querySelectorAll('input, button, a'));
+      const candidates = [];
+
+      for (const el of els) {
+        if (!isVisible(el)) continue;
+        const label = labelOf(el);
+        const labelLc = label.toLowerCase();
+        const r = el.getBoundingClientRect();
+
+        if (!(labelLc.includes('export') && labelLc.includes('pdf'))) continue;
+
+        candidates.push({
+          el,
+          score: Math.abs(r.top - 140) + Math.abs(r.left - 1120) * 0.1,
+          info: {
+            id: el.id || '',
+            label,
+            top: Math.round(r.top),
+            left: Math.round(r.left),
+            width: Math.round(r.width),
+            height: Math.round(r.height),
+          },
+        });
+      }
+
+      if (!candidates.length) {
+        return { ok: false };
+      }
+
+      candidates.sort((a, b) => a.score - b.score);
+      const picked = candidates[0];
+
+      try {
+        picked.el.scrollIntoView({ block: 'center', inline: 'nearest' });
+      } catch (e) {}
+
+      picked.el.click();
+      return { ok: true, picked: picked.info };
+    });
+
+    if (result && result.ok) {
+      console.log(`[INDIA] export pdf picked: ${JSON.stringify(result.picked)}`);
+      await page.waitForTimeout(1500);
+      return;
+    }
+
+    await page.waitForTimeout(1000);
+  }
 
   throw new Error('Export to PDF button not found');
 }
 
 async function downloadCategoryPdf(page, category) {
-  const exportButton = await clickExportPdf(page);
   const [download] = await Promise.all([
     page.waitForEvent('download', { timeout: CONFIG.downloadTimeoutMs }),
-    exportButton.click({ timeout: 5000 }),
+    clickIndiaExportToPdf(page),
   ]);
 
   const fileName = `${slugify(category.label)}_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}.pdf`;
@@ -523,8 +676,8 @@ async function scrapeCategoryViaPdf(page, category, reportWindow, runId) {
   await gotoSearchCompare(page);
   await selectEquipmentCategory(page, category.label);
   await waitForFilterPanel(page);
-  await selectAllVisibleFilters(page);
-  await clickSubmit(page);
+  const selectedInfos = await selectAllVisibleFilters(page);
+  await clickIndiaFilterSubmit(page, selectedInfos);
   await waitForResultsReady(page);
   await saveDebugArtifacts(page, `${slugify(category.label)}_results`);
 
@@ -541,7 +694,8 @@ async function scrapeCategoryViaPdf(page, category, reportWindow, runId) {
     if (!isWithinWindow(approvalDate, reportWindow.start2m, reportWindow.today)) continue;
 
     const approvalYmd = formatYmd(approvalDate);
-    const validTill = row.validTill ? formatYmd(parseFlexibleDate(row.validTill) || approvalDate) : '';
+    const validTillDate = parseFlexibleDate(row.validTill || '');
+    const validTill = validTillDate ? formatYmd(validTillDate) : '';
     const manufacturer = normalizeText(row.manufacturer || row.brand || '');
     const modelName = normalizeText(row.modelName || '');
     const productType = normalizeText(row.productType || '');
@@ -654,10 +808,8 @@ function isPdfNoiseLine(line) {
   if (lower.includes('eer(w)')) return true;
   if (lower.includes('eer (w)')) return true;
   if (lower.includes('equivalent iseer')) return true;
-  if (lower.includes('iseer')) return false; // real data rows may also have ISEER numbers only; keep line unless exact header already filtered above.
-  if (/^\d+\/\d+\/\d+$/.test(lower)) return false;
   if (lower === 'star rating') return true;
-  if (/^page\s+\d+/i.test(line)) return true;
+  if (/^page\s+\d+/i.test(lower)) return true;
   return false;
 }
 
