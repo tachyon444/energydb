@@ -24,14 +24,14 @@
  *   INDIA_CATEGORIES              optional comma-separated labels overriding defaults
  *   INDIA_TZ                      default Asia/Seoul for reporting window alignment with GAS
  *
- * npm i playwright playwright-extra puppeteer-extra-plugin-stealth
+ * npm i playwright playwright-extra playwright-extra-plugin-stealth
  */
 
 const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const StealthPlugin = require('playwright-extra-plugin-stealth');
 
 chromium.use(StealthPlugin());
 
@@ -101,6 +101,7 @@ async function main() {
     viewport: { width: 1440, height: 960 },
     locale: 'en-IN',
     timezoneId: 'Asia/Kolkata',
+    ignoreHTTPSErrors: true,
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   });
@@ -336,10 +337,51 @@ async function scrapeCategory(page, category, reportWindow, runId) {
 }
 
 async function gotoSearchCompare(page) {
-  await page.goto(CONFIG.baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('networkidle').catch(() => {});
-  await dismissCookieOrNotice(page);
-  await jitter(800, 1600);
+  const urls = buildCandidateUrls(CONFIG.baseUrl);
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    for (const url of urls) {
+      try {
+        console.log(`[INDIA] opening ${url} (attempt ${attempt})`);
+        await page.goto(url, { waitUntil: 'commit', timeout: CONFIG.timeoutMs });
+
+        await Promise.race([
+          page.waitForSelector('text=/Search And Compare/i', { timeout: Math.min(CONFIG.timeoutMs, 30000) }),
+          page.waitForSelector('text=/Select Appliances\/Equipment|Please select the Equipment Category/i', { timeout: Math.min(CONFIG.timeoutMs, 30000) }),
+          page.waitForSelector('select', { timeout: Math.min(CONFIG.timeoutMs, 30000) }),
+        ]);
+
+        await dismissCookieOrNotice(page);
+        await jitter(1200, 2200);
+        return;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[INDIA] open failed for ${url} (attempt ${attempt}): ${err && err.message ? err.message : err}`);
+        await saveDebugArtifacts(page, `goto_fail_attempt${attempt}`);
+        await jitter(1500 * attempt, 3000 * attempt);
+      }
+    }
+  }
+
+  throw new Error(`SearchCompare open failed after retries: ${lastErr && lastErr.message ? lastErr.message : lastErr}`);
+}
+
+function buildCandidateUrls(baseUrl) {
+  const trimmed = String(baseUrl || '').replace(/\/+$/, '');
+  const out = [];
+
+  function push(v) {
+    if (v && !out.includes(v)) out.push(v);
+  }
+
+  push(trimmed);
+  push(trimmed + '/');
+  if (/^https:/i.test(trimmed)) {
+    push(trimmed.replace(/^https:/i, 'http:'));
+    push(trimmed.replace(/^https:/i, 'http:') + '/');
+  }
+  return out;
 }
 
 async function dismissCookieOrNotice(page) {
