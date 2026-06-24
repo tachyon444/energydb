@@ -27,7 +27,14 @@ jobs:
         run: |
           npm install
           npx playwright install chromium --with-deps
-
+          
+      - name: BEE 사이트 연결 테스트
+        run: |
+          echo "Testing BEE..."
+          curl -I -L --max-time 30 https://www.beestarlabel.com/SearchCompare || true
+          echo "-----"
+          curl -I -L --max-time 30 https://www.beestarlabel.com/ || true
+      
       - name: India crawler 실행 및 GAS로 전송
         env:
           GAS_WEBAPP_URL: ${{ secrets.GAS_WEBAPP_URL }}
