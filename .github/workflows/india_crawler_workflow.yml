@@ -38,7 +38,7 @@ jobs:
           INDIA_TIMEOUT_MS: '180000'
           INDIA_EXPORT_WAIT_MS: '240000'
           INDIA_DOWNLOAD_TIMEOUT_MS: '420000'
-          INDIA_CATEGORIES: 'Room Air Conditioner (Fixed Speed)'
+          INDIA_CATEGORIES: 'Room Air Conditioner (Fixed Speed),Room Air Conditioner (Variable Speed)'
         run: node india_crawler.js
 
       - name: 디버그 아티팩트 업로드
