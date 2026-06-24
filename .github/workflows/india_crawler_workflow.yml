@@ -35,8 +35,10 @@ jobs:
           INDIA_INGEST_TOKEN: ${{ secrets.INDIA_INGEST_TOKEN }}
           INDIA_HEADLESS: 'true'
           INDIA_TZ: 'Asia/Seoul'
-          INDIA_TIMEOUT_MS: '60000'
-          INDIA_DOWNLOAD_TIMEOUT_MS: '120000'
+          INDIA_TIMEOUT_MS: '180000'
+          INDIA_EXPORT_WAIT_MS: '240000'
+          INDIA_DOWNLOAD_TIMEOUT_MS: '420000'
+          INDIA_CATEGORIES: 'Room Air Conditioner (Fixed Speed)'
         run: node india_crawler.js
 
       - name: 디버그 아티팩트 업로드
