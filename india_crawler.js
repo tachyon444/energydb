@@ -25,7 +25,8 @@
  *   INDIA_BASE_URL                default https://www.beestarlabel.com/SearchCompare
  *   INDIA_HEADLESS                default true
  *   INDIA_TIMEOUT_MS              default 60000
- *   INDIA_DOWNLOAD_TIMEOUT_MS     default 120000
+ *   INDIA_DOWNLOAD_TIMEOUT_MS     default 420000
+ *   INDIA_EXPORT_WAIT_MS          default 240000
  *   INDIA_POST_BATCH_SIZE         default 200
  *   INDIA_DEBUG_DIR               default ./artifacts/india_debug
  *   INDIA_TZ                      default Asia/Seoul
@@ -47,7 +48,8 @@ const CONFIG = {
   token: process.env.INDIA_INGEST_TOKEN || '',
   headless: parseBoolean(process.env.INDIA_HEADLESS, true),
   timeoutMs: toPositiveInt(process.env.INDIA_TIMEOUT_MS, 60000),
-  downloadTimeoutMs: toPositiveInt(process.env.INDIA_DOWNLOAD_TIMEOUT_MS, 120000),
+  downloadTimeoutMs: toPositiveInt(process.env.INDIA_DOWNLOAD_TIMEOUT_MS, 420000),
+  exportWaitMs: toPositiveInt(process.env.INDIA_EXPORT_WAIT_MS, 240000),
   postBatchSize: toPositiveInt(process.env.INDIA_POST_BATCH_SIZE, 200),
   debugDir: process.env.INDIA_DEBUG_DIR || path.resolve(process.cwd(), 'artifacts/india_debug'),
   reportTz: process.env.INDIA_TZ || 'Asia/Seoul',
@@ -606,18 +608,48 @@ async function clickIndiaFilterSubmit(page, selectedInfos) {
 }
 
 async function waitForResultsReady(page) {
-  await Promise.race([
-    page.locator('text=/Export to PDF/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-    page.locator('text=/Valid Till/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-    page.locator('text=/Approval Date/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-    page.locator('text=/Reviews\/Feedback/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-  ]);
-  await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
-  await jitter(1200, 1800);
+  const deadline = Date.now() + CONFIG.exportWaitMs;
+  let lastState = '';
+
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(() => {
+      function isVisible(el) {
+        if (!el || !el.getBoundingClientRect) return false;
+        const st = window.getComputedStyle(el);
+        if (!st) return false;
+        if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width >= 20 && r.height >= 20;
+      }
+
+      const bodyText = (document.body && document.body.innerText ? document.body.innerText : '').replace(/\s+/g, ' ');
+      const exportBtn = Array.from(document.querySelectorAll('input, button, a')).find((el) => {
+        if (!isVisible(el)) return false;
+        const label = [el.value, el.innerText, el.textContent, el.id, el.className]
+          .filter(Boolean).join(' ').toLowerCase();
+        return label.includes('export') && label.includes('pdf');
+      });
+
+      const pleaseWait = /please\s+wait/i.test(bodyText);
+      const hasCards = /valid\s+till\s+date/i.test(bodyText) || /reviews\/feedback/i.test(bodyText);
+      return { hasExport: !!exportBtn, pleaseWait, hasCards, textLen: bodyText.length };
+    }).catch(() => ({ hasExport: false, pleaseWait: false, hasCards: false, textLen: 0 }));
+
+    lastState = JSON.stringify(state);
+    if (state.hasExport) {
+      await jitter(1000, 1600);
+      return;
+    }
+
+    await page.waitForTimeout(3000);
+  }
+
+  await saveDebugArtifacts(page, `export_wait_timeout_${Date.now()}`).catch(() => {});
+  throw new Error(`Export to PDF button not found after ${CONFIG.exportWaitMs}ms. lastState=${lastState}`);
 }
 
 async function clickIndiaExportToPdf(page) {
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + CONFIG.exportWaitMs;
 
   while (Date.now() < deadline) {
     const result = await page.evaluate(() => {
@@ -707,8 +739,22 @@ async function downloadCategoryPdf(page, category) {
 
   const fileName = `${slugify(category.label)}_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}.pdf`;
   const pdfPath = path.join(CONFIG.debugDir, fileName);
-  await download.saveAs(pdfPath);
-  return pdfPath;
+
+  // On Windows service runners, download.saveAs/copyfile can fail with EPERM.
+  // Parse the browser temp file first, and save a debug copy only as best effort.
+  const tempPath = await download.path();
+  if (!tempPath) {
+    throw new Error('Downloaded PDF temp path is unavailable');
+  }
+
+  try {
+    const buf = await fs.readFile(tempPath);
+    await fs.writeFile(pdfPath, buf);
+    return pdfPath;
+  } catch (e) {
+    console.warn(`[INDIA] warning: failed to copy PDF to debug dir; using temp file. ${e.message}`);
+    return tempPath;
+  }
 }
 
 async function scrapeCategoryViaPdf(page, category, reportWindow, runId) {
@@ -788,7 +834,7 @@ async function parseCategoryPdf(pdfPath, category) {
   const buffer = await fs.readFile(pdfPath);
   const parsed = await pdfParse(buffer);
   const text = parsed && parsed.text ? parsed.text : '';
-  const txtPath = pdfPath.replace(/\.pdf$/i, '.txt');
+  const txtPath = path.join(CONFIG.debugDir, `${slugify(category.label)}_${Date.now()}_pdf_text.txt`);
   await fs.writeFile(txtPath, text, 'utf8').catch(() => {});
   const rows = parseBeePdfText(text, category);
   return { rows, textPath: txtPath };
