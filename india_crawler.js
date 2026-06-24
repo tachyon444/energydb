@@ -31,6 +31,8 @@
  *   INDIA_DEBUG_DIR               default ./artifacts/india_debug
  *   INDIA_TZ                      default Asia/Seoul
  *   INDIA_CATEGORIES              optional comma-separated labels overriding defaults
+ *
+ * Fix note: DEFAULT_CATEGORIES/HVAC_CATEGORY_MAP are initialized before CONFIG so INDIA_CATEGORIES works.
  */
 
 const fs = require('fs/promises');
@@ -41,20 +43,6 @@ const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
 chromium.use(StealthPlugin());
-
-const CONFIG = {
-  baseUrl: process.env.INDIA_BASE_URL || 'https://www.beestarlabel.com/SearchCompare',
-  gasUrl: process.env.GAS_WEBAPP_URL || '',
-  token: process.env.INDIA_INGEST_TOKEN || '',
-  headless: parseBoolean(process.env.INDIA_HEADLESS, true),
-  timeoutMs: toPositiveInt(process.env.INDIA_TIMEOUT_MS, 60000),
-  downloadTimeoutMs: toPositiveInt(process.env.INDIA_DOWNLOAD_TIMEOUT_MS, 420000),
-  exportWaitMs: toPositiveInt(process.env.INDIA_EXPORT_WAIT_MS, 240000),
-  postBatchSize: toPositiveInt(process.env.INDIA_POST_BATCH_SIZE, 200),
-  debugDir: process.env.INDIA_DEBUG_DIR || path.resolve(process.cwd(), 'artifacts/india_debug'),
-  reportTz: process.env.INDIA_TZ || 'Asia/Seoul',
-  categories: parseCategoryEnv(process.env.INDIA_CATEGORIES),
-};
 
 const DEFAULT_CATEGORIES = [
   { key: 'IN_RAC_FIXED', label: 'Room Air Conditioner (Fixed Speed)' },
@@ -69,6 +57,20 @@ const HVAC_CATEGORY_MAP = DEFAULT_CATEGORIES.reduce((acc, item) => {
   acc[item.label.toLowerCase()] = item.key;
   return acc;
 }, {});
+
+const CONFIG = {
+  baseUrl: process.env.INDIA_BASE_URL || 'https://www.beestarlabel.com/SearchCompare',
+  gasUrl: process.env.GAS_WEBAPP_URL || '',
+  token: process.env.INDIA_INGEST_TOKEN || '',
+  headless: parseBoolean(process.env.INDIA_HEADLESS, true),
+  timeoutMs: toPositiveInt(process.env.INDIA_TIMEOUT_MS, 60000),
+  downloadTimeoutMs: toPositiveInt(process.env.INDIA_DOWNLOAD_TIMEOUT_MS, 420000),
+  exportWaitMs: toPositiveInt(process.env.INDIA_EXPORT_WAIT_MS, 240000),
+  postBatchSize: toPositiveInt(process.env.INDIA_POST_BATCH_SIZE, 200),
+  debugDir: process.env.INDIA_DEBUG_DIR || path.resolve(process.cwd(), 'artifacts/india_debug'),
+  reportTz: process.env.INDIA_TZ || 'Asia/Seoul',
+  categories: parseCategoryEnv(process.env.INDIA_CATEGORIES),
+};
 
 const TYPE_HINTS = [
   'air conditioner',
