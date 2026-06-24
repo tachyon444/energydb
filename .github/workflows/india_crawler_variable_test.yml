@@ -1,0 +1,50 @@
+name: India HVAC Crawler
+
+on:
+  schedule:
+    - cron: '0 17 * * 0'
+  workflow_dispatch:
+
+jobs:
+  scrape_india:
+    runs-on: [self-hosted, windows, x64, bee-india]
+    timeout-minutes: 90
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 환경 준비
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Node / npm 버전 확인
+        run: |
+          node -v
+          npm -v
+
+      - name: 의존성 및 Playwright Chromium 설치
+        run: |
+          npm install
+          npx playwright install chromium
+
+      - name: India crawler 실행 및 GAS로 전송
+        env:
+          GAS_WEBAPP_URL: ${{ secrets.GAS_WEBAPP_URL }}
+          INDIA_INGEST_TOKEN: ${{ secrets.INDIA_INGEST_TOKEN }}
+          INDIA_HEADLESS: 'true'
+          INDIA_TZ: 'Asia/Seoul'
+          INDIA_TIMEOUT_MS: '180000'
+          INDIA_EXPORT_WAIT_MS: '600000'
+          INDIA_DOWNLOAD_TIMEOUT_MS: '600000'
+          INDIA_CATEGORIES: 'Room Air Conditioner (Variable Speed)'
+        run: node india_crawler.js
+
+      - name: 디버그 아티팩트 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: india-debug
+          path: artifacts/india_debug
+          if-no-files-found: ignore
