@@ -376,12 +376,30 @@ function normalizeOptionKey(text) {
 }
 
 async function waitForFilterPanel(page) {
-  await Promise.race([
-    page.getByRole('button', { name: /submit/i }).waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-    page.locator('text=/Brand\\s*\\[/i').first().waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-    page.locator('select').nth(1).waitFor({ timeout: CONFIG.timeoutMs }).catch(() => null),
-  ]);
-  await jitter(800, 1400);
+  await page.waitForFunction(() => {
+    function isVisible(el) {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    }
+    const selects = Array.from(document.querySelectorAll('select')).filter((el) => {
+      if (!isVisible(el)) return false;
+      const rect = el.getBoundingClientRect();
+      const isLeftPanel = rect.left < 520 && rect.top > 180;
+      const enoughOptions = (el.options || []).length >= 2;
+      return isLeftPanel && enoughOptions;
+    });
+    const labels = Array.from(document.querySelectorAll('label,h4,h5,div,span')).some((el) => {
+      if (!isVisible(el)) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.left >= 520 || rect.top <= 180) return false;
+      const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      return /^(Brand|Type|Model|FModel|Star Rating|Indian Seasonal Energy Efficiency Ratio|Nominal Marketing Capacity)/i.test(text);
+    });
+    return selects.length >= 2 || labels;
+  }, { timeout: CONFIG.timeoutMs });
+  await jitter(1200, 1800);
 }
 
 async function selectAllVisibleFilters(page) {
@@ -397,57 +415,75 @@ async function selectAllVisibleFilters(page) {
     }
 
     const summary = [];
-    const selects = Array.from(document.querySelectorAll('select'));
-    selects.forEach((select, idx) => {
-      if (!isVisible(select)) return;
+    const selects = Array.from(document.querySelectorAll('select')).filter((select) => {
+      if (!isVisible(select)) return false;
       const rect = select.getBoundingClientRect();
-      const isLikelyFilter = rect.left < 460 && rect.top > 280;
-      if (!isLikelyFilter) return;
+      const isLeftPanel = rect.left < 520 && rect.top > 180;
+      const notCategoryBox = rect.top > 250;
+      const enoughOptions = (select.options || []).length >= 2;
+      return isLeftPanel && notCategoryBox && enoughOptions;
+    });
 
+    selects.forEach((select, idx) => {
+      const rect = select.getBoundingClientRect();
       const options = Array.from(select.options || []);
-      const values = [];
-      options.forEach((opt) => {
-        const text = norm(opt.textContent || opt.label || '');
-        if (!text) return;
-        if (/^select appliances\/equipment$/i.test(text)) return;
-        if (/^select all$/i.test(text)) return;
-        if (!opt.value && text) return;
-        values.push(opt.value);
-      });
+      let selectedCount = 0;
 
       options.forEach((opt) => {
         const text = norm(opt.textContent || opt.label || '');
         if (!text) return;
         if (/^select appliances\/equipment$/i.test(text)) return;
         if (/^select all$/i.test(text)) return;
+        if (/^all$/i.test(text)) return;
         opt.selected = true;
+        selectedCount++;
       });
 
       select.dispatchEvent(new Event('input', { bubbles: true }));
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      summary.push({ idx, valuesCount: values.length, top: Math.round(rect.top), left: Math.round(rect.left) });
+      summary.push({ idx, selectedCount, optionsCount: options.length, top: Math.round(rect.top), left: Math.round(rect.left) });
     });
     return summary;
   });
 
   console.log(`[INDIA] selected all filters: ${JSON.stringify(result)}`);
-  await jitter(500, 900);
+  await jitter(700, 1200);
 }
 
 async function clickSubmit(page) {
-  const candidates = [
-    page.getByRole('button', { name: /^submit$/i }).first(),
-    page.locator('input[type="submit"][value*="Submit" i]').first(),
-    page.locator('button:has-text("Submit")').first(),
-  ];
-  for (const locator of candidates) {
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.click({ timeout: 3000 });
-      await jitter(1200, 1800);
-      return;
+  const clicked = await page.evaluate(() => {
+    function isVisible(el) {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     }
-  }
-  throw new Error('Submit button not found');
+    const candidates = Array.from(document.querySelectorAll('input[type="submit"],button'))
+      .filter((el) => isVisible(el))
+      .filter((el) => {
+        const text = String(el.value || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        return text === 'submit';
+      })
+      .filter((el) => el.id !== 'btnSubscribeNews')
+      .filter((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.left < 520 && rect.top > 350;
+      })
+      .sort((a, b) => {
+        const ra = a.getBoundingClientRect();
+        const rb = b.getBoundingClientRect();
+        return ra.top - rb.top || ra.left - rb.left;
+      });
+
+    const btn = candidates[0] || null;
+    if (!btn) return false;
+    btn.scrollIntoView({ block: 'center' });
+    btn.click();
+    return true;
+  });
+
+  if (!clicked) throw new Error('Filter submit button not found');
+  await jitter(1500, 2500);
 }
 
 async function waitForResultsReady(page) {
