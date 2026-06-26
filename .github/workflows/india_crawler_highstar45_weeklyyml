@@ -1,12 +1,14 @@
-name: India HVAC Crawler - 4-5 Star Variable Test
+name: India HVAC Crawler
 
 on:
+  schedule:
+    - cron: '0 17 * * 0'
   workflow_dispatch:
 
 jobs:
   scrape_india:
     runs-on: [self-hosted, windows, x64, bee-india]
-    timeout-minutes: 120
+    timeout-minutes: 240
 
     steps:
       - name: 코드 체크아웃
@@ -37,13 +39,12 @@ jobs:
           INDIA_EXPORT_WAIT_MS: '3600000'
           INDIA_DOWNLOAD_TIMEOUT_MS: '3600000'
           INDIA_STAR_RATINGS: '4,5'
-          INDIA_CATEGORIES: 'Room Air Conditioner (Variable Speed)'
         run: node india_crawler.js
 
       - name: 디버그 아티팩트 업로드
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: india-debug-highstar45-variable-test
+          name: india-debug-highstar45
           path: artifacts/india_debug
           if-no-files-found: ignore
