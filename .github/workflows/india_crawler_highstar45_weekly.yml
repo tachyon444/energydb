@@ -2,6 +2,7 @@ name: India HVAC Crawler
 
 on:
   schedule:
+    # Every Wednesday 00:17 KST (Tuesday 15:17 UTC)
     - cron: '17 15 * * 2'
   workflow_dispatch:
 
@@ -12,10 +13,10 @@ jobs:
 
     steps:
       - name: 코드 체크아웃
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Node.js 환경 준비
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
 
@@ -43,7 +44,7 @@ jobs:
 
       - name: 디버그 아티팩트 업로드
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: india-debug-highstar45
           path: artifacts/india_debug
